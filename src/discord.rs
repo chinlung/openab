@@ -172,7 +172,7 @@ impl EventHandler for Handler {
             msg.content.trim().to_string()
         };
 
-        // No text and no image attachments → skip to avoid wasting session slots
+        // No text and no attachments → skip to avoid wasting session slots
         if prompt.is_empty() && msg.attachments.is_empty() {
             return;
         }
@@ -397,6 +397,10 @@ fn is_text_attachment(attachment: &serenity::model::channel::Attachment) -> bool
 
 /// Download a text-based file attachment and return it as a ContentBlock::Text.
 /// Files larger than 512 KB are skipped to avoid bloating the prompt.
+///
+/// Note: the caller already guards total size via TEXT_TOTAL_CAP; the per-file
+/// MAX_SIZE check here is intentional defense-in-depth so this function remains
+/// self-contained and safe when called from other contexts.
 async fn download_and_read_text_file(
     attachment: &serenity::model::channel::Attachment,
 ) -> Option<(ContentBlock, u64)> {
