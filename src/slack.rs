@@ -205,7 +205,7 @@ impl ChatAdapter for SlackAdapter {
 
     async fn add_reaction(&self, msg: &MessageRef, emoji: &str) -> Result<()> {
         let name = unicode_to_slack_emoji(emoji);
-        self.api_post(
+        match self.api_post(
             "reactions.add",
             serde_json::json!({
                 "channel": msg.channel.channel_id,
@@ -213,13 +213,17 @@ impl ChatAdapter for SlackAdapter {
                 "name": name,
             }),
         )
-        .await?;
-        Ok(())
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains("already_reacted") => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     async fn remove_reaction(&self, msg: &MessageRef, emoji: &str) -> Result<()> {
         let name = unicode_to_slack_emoji(emoji);
-        self.api_post(
+        match self.api_post(
             "reactions.remove",
             serde_json::json!({
                 "channel": msg.channel.channel_id,
@@ -227,8 +231,12 @@ impl ChatAdapter for SlackAdapter {
                 "name": name,
             }),
         )
-        .await?;
-        Ok(())
+        .await
+        {
+            Ok(_) => Ok(()),
+            Err(e) if e.to_string().contains("no_reaction") => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -478,6 +486,13 @@ async fn handle_message(
     let prompt = if is_mention {
         strip_slack_mention(&text)
     } else {
+        // Thread follow-up: check for bot loop before processing
+        if let Some(ref tts) = thread_ts {
+            if is_bot_loop(adapter, &channel_id, tts).await {
+                tracing::warn!(channel_id, thread_ts = tts, "bot loop detected, ignoring");
+                return;
+            }
+        }
         text.trim().to_string()
     };
 
@@ -581,6 +596,39 @@ async fn handle_message(
 
 static SLACK_MENTION_RE: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"<@[A-Z0-9]+>").unwrap());
+
+/// Hard cap on consecutive bot messages in a thread.
+/// Mirrors Discord's MAX_CONSECUTIVE_BOT_TURNS to prevent runaway loops.
+const MAX_CONSECUTIVE_BOT_TURNS: usize = 10;
+
+/// Check if the last N messages in a Slack thread are all from bots.
+async fn is_bot_loop(adapter: &SlackAdapter, channel: &str, thread_ts: &str) -> bool {
+    let resp = adapter
+        .api_post(
+            "conversations.replies",
+            serde_json::json!({
+                "channel": channel,
+                "ts": thread_ts,
+                "limit": MAX_CONSECUTIVE_BOT_TURNS + 1,
+                "inclusive": true,
+            }),
+        )
+        .await;
+
+    let Ok(json) = resp else { return false }; // fail-open on API error
+    let Some(messages) = json["messages"].as_array() else { return false };
+
+    // Skip the first message (thread parent), count consecutive bot messages from the end
+    let recent: Vec<_> = messages.iter().skip(1).rev().collect();
+    if recent.len() < MAX_CONSECUTIVE_BOT_TURNS {
+        return false;
+    }
+
+    recent
+        .iter()
+        .take(MAX_CONSECUTIVE_BOT_TURNS)
+        .all(|m| m["bot_id"].is_string() || m["subtype"].as_str() == Some("bot_message"))
+}
 
 fn strip_slack_mention(text: &str) -> String {
     SLACK_MENTION_RE.replace_all(text, "").trim().to_string()
