@@ -427,13 +427,15 @@ impl EventHandler for Handler {
 
         let trigger_msg = discord_msg_ref(&msg);
 
-        if let Err(e) = self
-            .router
-            .handle_message(&adapter, &thread_channel, &sender, &prompt, extra_blocks, &trigger_msg)
-            .await
-        {
-            error!("handle_message error: {e}");
-        }
+        let router = self.router.clone();
+        tokio::spawn(async move {
+            if let Err(e) = router
+                .handle_message(&adapter, &thread_channel, &sender, &prompt, extra_blocks, &trigger_msg)
+                .await
+            {
+                error!("handle_message error: {e}");
+            }
+        });
     }
 
     async fn ready(&self, _ctx: Context, ready: Ready) {
