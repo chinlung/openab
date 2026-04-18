@@ -60,3 +60,13 @@ pub fn shorten_thread_name(prompt: &str) -> String {
     }
 }
 
+
+/// Truncate a string to at most `limit` Unicode characters, keeping the tail
+/// (most recent output) for better streaming UX.
+pub fn truncate_chars_tail(s: &str, limit: usize) -> String {
+    let total = s.chars().count();
+    if total <= limit {
+        return s.to_string();
+    }
+    s.chars().skip(total - limit).collect()
+}

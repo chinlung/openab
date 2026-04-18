@@ -5,7 +5,7 @@ use crate::format;
 use crate::media;
 use async_trait::async_trait;
 use std::sync::LazyLock;
-use serenity::builder::{CreateThread, EditMessage};
+use serenity::builder::CreateThread;
 use serenity::http::Http;
 use serenity::model::channel::{AutoArchiveDuration, Message, ReactionType};
 use serenity::model::gateway::Ready;
@@ -52,19 +52,6 @@ impl ChatAdapter for DiscordAdapter {
             channel: channel.clone(),
             message_id: msg.id.to_string(),
         })
-    }
-
-    async fn edit_message(&self, msg: &MessageRef, content: &str) -> anyhow::Result<()> {
-        let ch_id: u64 = msg.channel.channel_id.parse()?;
-        let msg_id: u64 = msg.message_id.parse()?;
-        ChannelId::new(ch_id)
-            .edit_message(
-                &self.http,
-                MessageId::new(msg_id),
-                EditMessage::new().content(content),
-            )
-            .await?;
-        Ok(())
     }
 
     async fn create_thread(
@@ -216,11 +203,7 @@ impl EventHandler for Handler {
             self.allowed_channels.is_empty() || self.allowed_channels.contains(&channel_id);
 
         let is_mentioned = msg.mentions_user_id(bot_id)
-            || msg.content.contains(&format!("<@{}>", bot_id))
-            || msg
-                .mention_roles
-                .iter()
-                .any(|r| msg.content.contains(&format!("<@&{}>", r)));
+            || msg.content.contains(&format!("<@{}>", bot_id));
 
         // Bot message gating (from upstream #321)
         if msg.author.bot {
@@ -361,6 +344,7 @@ impl EventHandler for Handler {
             display_name: display_name.to_string(),
             channel: "discord".into(),
             channel_id: msg.channel_id.to_string(),
+            thread_id: None,
             is_bot: msg.author.bot,
         };
 
