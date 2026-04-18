@@ -411,25 +411,28 @@ impl KeyedAsyncQueue {
     /// Acquire a per-key permit. The returned guard must be held for the
     /// duration of the async work. Dropping it allows the next queued task
     /// for the same key to proceed.
-    async fn acquire(&self, key: &str) -> tokio::sync::OwnedSemaphorePermit {
+    ///
+    /// Performs lazy cleanup of idle semaphores to prevent unbounded growth
+    /// in long-running deployments.
+    async fn acquire(&self, key: &str) -> Option<tokio::sync::OwnedSemaphorePermit> {
         let sem = {
             let mut tails = self.tails.lock().await;
+            // Lazy cleanup: evict idle entries (available_permits == 1 means no one is holding or waiting)
+            if tails.len() > 100 {
+                tails.retain(|_, sem| Arc::strong_count(sem) > 1 || sem.available_permits() < 1);
+            }
             tails
                 .entry(key.to_string())
                 .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
                 .clone()
         };
-        // This will wait if another task for the same key is in progress.
-        sem.acquire_owned().await.expect("semaphore closed unexpectedly")
-    }
-
-    /// Remove semaphores that have no waiters and no held permits (idle).
-    /// Memory cost of idle entries is low (one Arc<Semaphore> per thread_ts),
-    /// so cleanup is best-effort and not critical.
-    #[allow(dead_code)]
-    async fn cleanup_idle(&self) {
-        let mut tails = self.tails.lock().await;
-        tails.retain(|_, sem| sem.available_permits() < 1);
+        match sem.acquire_owned().await {
+            Ok(permit) => Some(permit),
+            Err(e) => {
+                warn!(key, error = %e, "semaphore closed, skipping message");
+                None
+            }
+        }
     }
 }
 
@@ -533,14 +536,17 @@ pub async fn run_slack_adapter(
                                                 let stt_config = stt_config.clone();
                                                 let router = router.clone();
                                                 let queue = queue.clone();
-                                                // Queue key: thread_ts (existing thread) or ts (new thread)
+                                                // Queue key: thread_ts if already in a thread, otherwise ts.
+                                                // app_mention always has a channel context, so ts alone
+                                                // is unique enough (unlike message events in DMs where
+                                                // we prefix with channel_id to avoid ts collisions).
                                                 let queue_key = event["thread_ts"]
                                                     .as_str()
                                                     .or_else(|| event["ts"].as_str())
                                                     .unwrap_or("")
                                                     .to_string();
                                                 tokio::spawn(async move {
-                                                    let _permit = queue.acquire(&queue_key).await;
+                                                    let Some(_permit) = queue.acquire(&queue_key).await else { return };
                                                     handle_message(
                                                         &event,
                                                         true,
@@ -684,7 +690,10 @@ pub async fn run_slack_adapter(
                                                 let stt_config = stt_config.clone();
                                                 let router = router.clone();
                                                 let queue = queue.clone();
-                                                // Queue key: thread_ts (existing thread) or channel:ts (new thread / DM)
+                                                // Queue key: thread_ts if in a thread, otherwise channel:ts.
+                                                // Prefixed with channel_id for non-thread messages because
+                                                // DMs and channels can have overlapping ts values — the
+                                                // prefix ensures keys are globally unique.
                                                 let queue_key = event["thread_ts"]
                                                     .as_str()
                                                     .map(|s| s.to_string())
@@ -692,7 +701,7 @@ pub async fn run_slack_adapter(
                                                         format!("{}:{}", channel_id, event["ts"].as_str().unwrap_or(""))
                                                     });
                                                 tokio::spawn(async move {
-                                                    let _permit = queue.acquire(&queue_key).await;
+                                                    let Some(_permit) = queue.acquire(&queue_key).await else { return };
                                                     handle_message(
                                                         &event,
                                                         is_dm,

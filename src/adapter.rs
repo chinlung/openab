@@ -256,7 +256,7 @@ impl AdapterRouter {
                                     let content = buf_rx.borrow_and_update().clone();
                                     if content != last {
                                         let display = if content.chars().count() > limit - 100 {
-                                            format!("{}…", format::truncate_chars(&content, limit - 100))
+                                            format!("…{}", format::truncate_chars_tail(&content, limit - 100))
                                         } else {
                                             content.clone()
                                         };
