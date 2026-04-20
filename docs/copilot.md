@@ -113,6 +113,8 @@ Scenario 2: Different users (split auth)
 └─────────────────────────────────────────────────────────┘
 ```
 
+> **Recommendation**: If your Copilot subscription is on a privileged human account (e.g. org admin), we strongly recommend Scenario 2 — use a fine-grained PAT for the subscription and a scoped bot user for git operations. This limits the blast radius of the agent's git access.
+
 | Auth Layer | Purpose | Account | Method |
 |---|---|---|---|
 | `COPILOT_GITHUB_TOKEN` | Copilot subscription (models) | Subscription owner | Fine-grained PAT env var |
