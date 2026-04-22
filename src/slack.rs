@@ -1,6 +1,6 @@
 use crate::acp::ContentBlock;
 use crate::adapter::{AdapterRouter, ChatAdapter, ChannelRef, MessageRef, SenderContext};
-use crate::bot_turns::{BotTurnTracker, TurnResult, HARD_BOT_TURN_LIMIT};
+use crate::bot_turns::{BotTurnTracker, TurnAction, TurnSeverity};
 use crate::config::{AllowBots, AllowUsers, SttConfig};
 use crate::media;
 use anyhow::{anyhow, Result};
@@ -672,9 +672,14 @@ pub async fn run_slack_adapter(
                                                 {
                                                     let mut tracker = bot_turns.lock().await;
                                                     if is_bot {
-                                                        match tracker.on_bot_message(&turn_key) {
-                                                            TurnResult::HardLimit => {
-                                                                warn!(channel_id, "hard bot turn limit reached");
+                                                        match tracker.classify_bot_message(&turn_key) {
+                                                            TurnAction::Continue => {}
+                                                            TurnAction::SilentStop => continue,
+                                                            TurnAction::WarnAndStop { severity, turns, user_message } => {
+                                                                match severity {
+                                                                    TurnSeverity::Hard => warn!(channel_id, turns, "hard bot turn limit reached"),
+                                                                    TurnSeverity::Soft => info!(channel_id, turns, max = max_bot_turns, "soft bot turn limit reached"),
+                                                                }
                                                                 if !is_own_bot_msg {
                                                                     let warn_channel = ChannelRef {
                                                                         platform: "slack".into(),
@@ -682,32 +687,10 @@ pub async fn run_slack_adapter(
                                                                         thread_id: event["thread_ts"].as_str().map(|s| s.to_string()),
                                                                         parent_id: None,
                                                                     };
-                                                                    let _ = adapter.send_message(
-                                                                        &warn_channel,
-                                                                        &format!("🛑 Hard bot turn limit reached ({HARD_BOT_TURN_LIMIT}). A human must reply to continue."),
-                                                                    ).await;
+                                                                    let _ = adapter.send_message(&warn_channel, &user_message).await;
                                                                 }
                                                                 continue;
                                                             }
-                                                            TurnResult::Stopped => continue,
-                                                            TurnResult::SoftLimit(n) => {
-                                                                info!(channel_id, turns = n, max = max_bot_turns, "soft bot turn limit reached");
-                                                                if !is_own_bot_msg {
-                                                                    let warn_channel = ChannelRef {
-                                                                        platform: "slack".into(),
-                                                                        channel_id: channel_id.to_string(),
-                                                                        thread_id: event["thread_ts"].as_str().map(|s| s.to_string()),
-                                                                        parent_id: None,
-                                                                    };
-                                                                    let _ = adapter.send_message(
-                                                                        &warn_channel,
-                                                                        &format!("⚠️ Bot turn limit reached ({n}/{max_bot_turns}). A human must reply in this thread to continue bot-to-bot conversation."),
-                                                                    ).await;
-                                                                }
-                                                                continue;
-                                                            }
-                                                            TurnResult::Throttled => continue,
-                                                            TurnResult::Ok => {}
                                                         }
                                                     } else {
                                                         tracker.on_human_message(&turn_key);
@@ -813,8 +796,15 @@ pub async fn run_slack_adapter(
                                                                     debug!(channel_id, thread_ts, "bot not involved in thread, ignoring");
                                                                     continue;
                                                                 }
-                                                                if other_bot {
-                                                                    debug!(channel_id, thread_ts, "multi-bot thread, requiring @mention");
+                                                                // In multi-bot threads, require @mention — mirrors
+                                                                // Discord's `should_process_user_message`. In practice
+                                                                // mention-bearing message events are already deduped
+                                                                // earlier (app_mention handles the @-path), so this
+                                                                // branch rarely sees `mentions_bot == true`, but keep
+                                                                // the explicit check so the logic is self-consistent
+                                                                // and survives changes to the earlier dedup.
+                                                                if other_bot && !mentions_bot {
+                                                                    debug!(channel_id, thread_ts, "multi-bot thread without @mention, ignoring");
                                                                     continue;
                                                                 }
                                                             }

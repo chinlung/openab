@@ -1,7 +1,7 @@
 use crate::acp::ContentBlock;
 use crate::acp::protocol::ConfigOption;
 use crate::adapter::{AdapterRouter, ChatAdapter, ChannelRef, MessageRef, SenderContext};
-use crate::bot_turns::{BotTurnTracker, TurnResult, HARD_BOT_TURN_LIMIT};
+use crate::bot_turns::{BotTurnTracker, TurnAction, TurnSeverity};
 use crate::config::{AllowBots, AllowUsers, SttConfig};
 use crate::format;
 use crate::media;
@@ -259,30 +259,28 @@ impl EventHandler for Handler {
             let thread_key = msg.channel_id.to_string();
             let mut tracker = self.bot_turns.lock().await;
             if msg.author.bot {
-                match tracker.on_bot_message(&thread_key) {
-                    TurnResult::HardLimit => {
-                        tracing::warn!(channel_id = %msg.channel_id, "hard bot turn limit reached");
+                match tracker.classify_bot_message(&thread_key) {
+                    TurnAction::Continue => {}
+                    TurnAction::SilentStop => return,
+                    TurnAction::WarnAndStop { severity, turns, user_message } => {
+                        match severity {
+                            TurnSeverity::Hard => tracing::warn!(
+                                channel_id = %msg.channel_id,
+                                turns,
+                                "hard bot turn limit reached",
+                            ),
+                            TurnSeverity::Soft => tracing::info!(
+                                channel_id = %msg.channel_id,
+                                turns,
+                                max = self.max_bot_turns,
+                                "soft bot turn limit reached",
+                            ),
+                        }
                         if msg.author.id != bot_id {
-                            let _ = msg.channel_id.say(
-                                &ctx.http,
-                                format!("🛑 Hard bot turn limit reached ({HARD_BOT_TURN_LIMIT}). A human must reply to continue."),
-                            ).await;
+                            let _ = msg.channel_id.say(&ctx.http, &user_message).await;
                         }
                         return;
                     }
-                    TurnResult::Stopped => return,
-                    TurnResult::SoftLimit(n) => {
-                        tracing::info!(channel_id = %msg.channel_id, turns = n, max = self.max_bot_turns, "soft bot turn limit reached");
-                        if msg.author.id != bot_id {
-                            let _ = msg.channel_id.say(
-                                &ctx.http,
-                                format!("⚠️ Bot turn limit reached ({n}/{}). A human must reply in this thread to continue bot-to-bot conversation.", self.max_bot_turns),
-                            ).await;
-                        }
-                        return;
-                    }
-                    TurnResult::Throttled => return,
-                    TurnResult::Ok => {}
                 }
             } else if matches!(msg.kind, MessageType::Regular | MessageType::InlineReply)
                 && !msg.content.is_empty()

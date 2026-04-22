@@ -60,6 +60,63 @@ impl BotTurnTracker {
             *hard = 0;
         }
     }
+
+    /// High-level decision for a bot message: increments the counter and
+    /// returns what the adapter should do. Collapses the warn-once semantics
+    /// and user-facing message formatting so Discord/Slack (and future adapters)
+    /// don't duplicate the match.
+    pub fn classify_bot_message(&mut self, thread_id: &str) -> TurnAction {
+        match self.on_bot_message(thread_id) {
+            TurnResult::Ok => TurnAction::Continue,
+            TurnResult::SoftLimit(n) => TurnAction::WarnAndStop {
+                severity: TurnSeverity::Soft,
+                turns: n,
+                user_message: format!(
+                    "⚠️ Bot turn limit reached ({n}/{soft}). \
+                     A human must reply in this thread to continue bot-to-bot conversation.",
+                    soft = self.soft_limit,
+                ),
+            },
+            TurnResult::HardLimit => TurnAction::WarnAndStop {
+                severity: TurnSeverity::Hard,
+                turns: HARD_BOT_TURN_LIMIT,
+                user_message: format!(
+                    "🛑 Hard bot turn limit reached ({HARD_BOT_TURN_LIMIT}). \
+                     A human must reply to continue."
+                ),
+            },
+            TurnResult::Throttled | TurnResult::Stopped => TurnAction::SilentStop,
+        }
+    }
+}
+
+/// Log severity hint for `TurnAction::WarnAndStop`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TurnSeverity {
+    /// Soft limit — typically logged at `info!`.
+    Soft,
+    /// Hard absolute cap — typically logged at `warn!`.
+    Hard,
+}
+
+/// High-level action for a bot message after calling
+/// [`BotTurnTracker::classify_bot_message`].
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum TurnAction {
+    /// Safe to continue processing this bot message.
+    Continue,
+    /// Stop processing; if the message did not come from our own bot, the
+    /// caller should post `user_message` to the thread so humans see why
+    /// the bot went quiet. `turns` is the counter value at the warning
+    /// point — useful as a structured log field.
+    WarnAndStop {
+        severity: TurnSeverity,
+        turns: u32,
+        user_message: String,
+    },
+    /// Stop processing silently — the warning was already sent on a previous
+    /// turn; further warnings would spam the thread.
+    SilentStop,
 }
 
 #[cfg(test)]
@@ -190,5 +247,93 @@ mod tests {
         assert_eq!(t.on_bot_message("t1"), TurnResult::Ok);
         assert_eq!(t.on_bot_message("t1"), TurnResult::Ok);
         assert_eq!(t.on_bot_message("t1"), TurnResult::SoftLimit(3));
+    }
+
+    #[test]
+    fn classify_returns_continue_under_limits() {
+        let mut t = BotTurnTracker::new(5);
+        assert_eq!(t.classify_bot_message("t1"), TurnAction::Continue);
+    }
+
+    #[test]
+    fn classify_returns_warn_and_stop_on_soft_limit() {
+        let mut t = BotTurnTracker::new(3);
+        let _ = t.classify_bot_message("t1");
+        let _ = t.classify_bot_message("t1");
+        assert_eq!(
+            t.classify_bot_message("t1"),
+            TurnAction::WarnAndStop {
+                severity: TurnSeverity::Soft,
+                turns: 3,
+                user_message: "⚠️ Bot turn limit reached (3/3). \
+                               A human must reply in this thread to continue bot-to-bot conversation."
+                    .to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn classify_returns_silent_stop_past_soft_limit() {
+        let mut t = BotTurnTracker::new(2);
+        let _ = t.classify_bot_message("t1");
+        let _ = t.classify_bot_message("t1");
+        assert_eq!(t.classify_bot_message("t1"), TurnAction::SilentStop);
+        assert_eq!(t.classify_bot_message("t1"), TurnAction::SilentStop);
+    }
+
+    #[test]
+    fn classify_returns_warn_and_stop_on_hard_limit() {
+        let mut t = BotTurnTracker::new(HARD_BOT_TURN_LIMIT + 1);
+        for _ in 0..HARD_BOT_TURN_LIMIT - 1 {
+            let _ = t.classify_bot_message("t1");
+        }
+        assert_eq!(
+            t.classify_bot_message("t1"),
+            TurnAction::WarnAndStop {
+                severity: TurnSeverity::Hard,
+                turns: HARD_BOT_TURN_LIMIT,
+                user_message: format!(
+                    "🛑 Hard bot turn limit reached ({HARD_BOT_TURN_LIMIT}). \
+                     A human must reply to continue."
+                ),
+            },
+        );
+        assert_eq!(t.classify_bot_message("t1"), TurnAction::SilentStop);
+    }
+
+    #[test]
+    fn classify_is_per_thread_independent() {
+        let mut t = BotTurnTracker::new(2);
+        assert_eq!(t.classify_bot_message("t1"), TurnAction::Continue);
+        assert!(matches!(
+            t.classify_bot_message("t1"),
+            TurnAction::WarnAndStop { severity: TurnSeverity::Soft, .. },
+        ));
+        assert_eq!(t.classify_bot_message("t2"), TurnAction::Continue);
+        assert!(matches!(
+            t.classify_bot_message("t2"),
+            TurnAction::WarnAndStop { severity: TurnSeverity::Soft, .. },
+        ));
+    }
+
+    // End-to-end: human message must fully reset classify behavior on the
+    // same thread, including unlocking new `Continue` responses.
+    #[test]
+    fn classify_resumes_after_human_message() {
+        let mut t = BotTurnTracker::new(2);
+        let _ = t.classify_bot_message("t1"); // Continue
+        assert!(matches!(
+            t.classify_bot_message("t1"),
+            TurnAction::WarnAndStop { .. },
+        ));
+        // Without a human message, the next classify is silent.
+        assert_eq!(t.classify_bot_message("t1"), TurnAction::SilentStop);
+        // Human resets — classify starts at Continue again.
+        t.on_human_message("t1");
+        assert_eq!(t.classify_bot_message("t1"), TurnAction::Continue);
+        assert!(matches!(
+            t.classify_bot_message("t1"),
+            TurnAction::WarnAndStop { severity: TurnSeverity::Soft, turns: 2, .. },
+        ));
     }
 }
