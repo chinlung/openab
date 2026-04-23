@@ -166,6 +166,54 @@ Speech-to-text transcription for voice messages. Uses an OpenAI-compatible `/aud
 
 ---
 
+## Customizing via Helm
+
+When deploying with the Helm chart (`charts/openab`), the `config.toml` is generated from `values.yaml`. Each agent is defined under the `agents` map:
+
+```yaml
+agents:
+  kiro:
+    command: kiro-cli
+    args: ["acp", "--trust-all-tools"]
+    discord:
+      enabled: true
+      allowedChannels: ["1234567890"]
+      allowBotMessages: "mentions"
+      trustedBotIds: ["9876543210"]
+    pool:
+      maxSessions: 10
+      sessionTtlHours: 24
+    reactions:
+      enabled: true
+    stt:
+      enabled: true
+      apiKey: "your-groq-key"
+```
+
+Key mapping (`values.yaml` → `config.toml`):
+
+| Helm value | Config key |
+|---|---|
+| `agents.<name>.discord.allowedChannels` | `[discord] allowed_channels` |
+| `agents.<name>.discord.allowBotMessages` | `[discord] allow_bot_messages` |
+| `agents.<name>.discord.trustedBotIds` | `[discord] trusted_bot_ids` |
+| `agents.<name>.discord.allowUserMessages` | `[discord] allow_user_messages` |
+| `agents.<name>.slack.*` | `[slack] *` (same pattern) |
+| `agents.<name>.pool.maxSessions` | `[pool] max_sessions` |
+| `agents.<name>.pool.sessionTtlHours` | `[pool] session_ttl_hours` |
+| `agents.<name>.reactions.enabled` | `[reactions] enabled` |
+| `agents.<name>.stt.apiKey` | `[stt] api_key` |
+
+> ⚠️ Use `--set-string` (not `--set`) for Discord/Slack IDs to avoid float64 precision loss:
+> ```bash
+> helm upgrade --install mybot charts/openab \
+>   --set-string agents.kiro.discord.allowedChannels[0]="1234567890"
+> ```
+
+See `charts/openab/values.yaml` for the full list of Helm values including `persistence`, `image`, `resources`, and multi-agent examples.
+
+---
+
 ## Environment variable interpolation
 
 Any value can reference environment variables with `${VAR_NAME}`:
