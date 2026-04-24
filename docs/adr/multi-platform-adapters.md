@@ -1,13 +1,14 @@
-# RFC 002: Multi-Platform Adapter Architecture
+# ADR: Multi-Platform Adapter Architecture
 
-**Tracking issues:** #86, #93
-**Status:** Partially Implemented — Phase 1+3 landed via #259 (Slack adapter)
-**Author:** @chaodu-agent
-**Reviewers:** @dogzzdogzz, @antigenius0910
+- **Status:** Partially Implemented — Phase 1+3 landed via #259 (Slack adapter)
+- **Date:** 2026-04-06
+- **Author:** @chaodu-agent
+- **Reviewers:** @dogzzdogzz, @antigenius0910
+- **Tracking issues:** #86, #93
 
 ---
 
-## Summary
+## 1. Context & Decision
 
 Define a platform-agnostic adapter layer for agent-broker so it can serve Discord, Telegram, Slack, and future chat platforms through a single unified architecture. The ACP session pool and agent backend remain unchanged — only the "front door" becomes pluggable.
 
@@ -15,7 +16,7 @@ Define a platform-agnostic adapter layer for agent-broker so it can serve Discor
 
 > Contract A (pluggable single-platform per deployment) is a subset of B and works automatically — deploy with only one `[platform]` section in config.
 
-## Motivation
+## 2. Motivation
 
 - agent-broker was originally hard-wired to Discord via `serenity`
 - #86 proposes a Telegram adapter, #93 proposes Slack — both require similar abstractions
@@ -24,7 +25,7 @@ Define a platform-agnostic adapter layer for agent-broker so it can serve Discor
 
 ---
 
-## Current Architecture (post-#259)
+## 3. Current Architecture (post-#259)
 
 ```
                     ┌─────────────────┐
@@ -54,7 +55,7 @@ Define a platform-agnostic adapter layer for agent-broker so it can serve Discor
 
 ---
 
-## 1. ChatAdapter Trait
+## 4. ChatAdapter Trait
 
 The core abstraction. Each platform implements this trait.
 
@@ -139,7 +140,7 @@ pub struct SenderContext {
 
 ---
 
-## 2. AdapterRouter
+## 5. AdapterRouter
 
 Shared logic extracted from `discord.rs` that is platform-independent:
 
@@ -182,7 +183,7 @@ Each adapter only needs to:
 
 ---
 
-## 3. Platform Comparison
+## 6. Platform Comparison
 
 | Feature | Discord | Telegram | Slack |
 |---------|---------|----------|-------|
@@ -197,7 +198,7 @@ Each adapter only needs to:
 
 ---
 
-## 4. Config Design
+## 7. Config Design
 
 ```toml
 # Enable one or more adapters. Multiple can run simultaneously.
@@ -236,7 +237,7 @@ session_ttl_hours = 24
 
 ---
 
-## 5. Message Size Handling
+## 8. Message Size Handling
 
 Each platform has different message limits. The `format::split_message` function accepts a configurable limit, sourced from `adapter.message_limit()`:
 
@@ -252,7 +253,7 @@ pub fn split_message(content: &str, max_len: usize) -> Vec<String>;
 
 ---
 
-## 6. Reaction Mapping
+## 9. Reaction Mapping
 
 The `StatusReactionController` uses `Arc<dyn ChatAdapter>` to call `add_reaction()` / `remove_reaction()`, fully decoupled from any platform SDK.
 
@@ -268,7 +269,7 @@ Config stores Unicode emoji. Each adapter converts internally:
 
 ---
 
-## 7. Security Considerations
+## 10. Security Considerations
 
 - **Secure by default** (#91): empty allowlist = deny all, for every platform
 - **Bot message filtering**: each adapter must ignore messages from bots to prevent loops
@@ -278,7 +279,7 @@ Config stores Unicode emoji. Each adapter converts internally:
 
 ---
 
-## 8. Implementation Phases
+## 11. Implementation Phases
 
 | Phase | Scope | Status | Notes |
 |-------|-------|--------|-------|
@@ -290,7 +291,7 @@ Config stores Unicode emoji. Each adapter converts internally:
 
 ---
 
-## 9. Kubernetes / Helm Considerations
+## 12. Kubernetes / Helm Considerations
 
 - Single image supports all adapters (all compiled in)
 - Helm `values.yaml` gains `telegram.*` and `slack.*` sections
@@ -299,7 +300,7 @@ Config stores Unicode emoji. Each adapter converts internally:
 
 ---
 
-## 10. Testing Strategy
+## 13. Testing Strategy
 
 (Feedback: @dogzzdogzz #8)
 
@@ -338,7 +339,7 @@ impl ChatAdapter for MockAdapter {
 
 ---
 
-## 11. Resolved Questions
+## 14. Resolved Questions
 
 (Feedback: @dogzzdogzz #7, @antigenius0910)
 
@@ -353,7 +354,7 @@ impl ChatAdapter for MockAdapter {
 
 ---
 
-## 12. Known Limitations
+## 15. Known Limitations
 
 (Feedback: @antigenius0910)
 
